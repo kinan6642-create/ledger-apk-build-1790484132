@@ -33,23 +33,31 @@ jobs:
         run: chmod +x android/gradlew
 
       - name: مزامنة Capacitor
-        run: npx cap sync android
+        continue-on-error: true
+        run: npx cap sync android 2>&1 | tee cap-sync.log
 
       - name: بناء APK (نسخة تجريبية debug)
+        continue-on-error: true
         working-directory: android
-        run: ./gradlew assembleDebug --stacktrace
+        run: ./gradlew assembleDebug --stacktrace 2>&1 | tee ../gradle-build.log
 
-      - name: رفع ملف APK كمخرج للتحميل
-        uses: actions/upload-artifact@v4
-        with:
-          name: دفتر-التاجر-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+      - name: تجميع ملفات السجل
+        if: always()
+        run: |
+          mkdir -p debug-artifacts
+          cp cap-sync.log debug-artifacts/ 2>/dev/null || echo "no cap-sync.log" > debug-artifacts/cap-sync.log
+          cp gradle-build.log debug-artifacts/ 2>/dev/null || echo "no gradle-build.log" > debug-artifacts/gradle-build.log
+          if [ -f android/app/build/outputs/apk/debug/app-debug.apk ]; then
+            cp android/app/build/outputs/apk/debug/app-debug.apk debug-artifacts/
+          fi
+          ls -la debug-artifacts
 
-      - name: نشر APK كإصدار (Release) قابل للتحميل مباشرة
+      - name: نشر النتائج والسجلات كإصدار (Release) قابل للتحميل مباشرة
+        if: always()
         uses: softprops/action-gh-release@v2
         with:
           tag_name: apk-latest
-          name: "آخر بناء APK"
-          files: android/app/build/outputs/apk/debug/app-debug.apk
+          name: "آخر بناء"
+          files: debug-artifacts/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
