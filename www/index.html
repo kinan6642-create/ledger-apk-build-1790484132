@@ -419,23 +419,62 @@ function save(){
   syncToSql();
   persistSql();
 }
+// Shared save/share routine used by every export button (PDF, backup JSON, .sqlite file).
+// Tries, in order: (1) Claude's native save capability, when this page is opened as a published
+// Claude artifact — (2) native Android file save + share sheet, when running inside the Capacitor
+// app shell (plain <a download> silently does nothing in Android WebView, this is the real fix
+// for that) — (3) a normal browser download, when opened as a plain HTML file on a computer.
+async function saveOrShareBlob(filename, blob){
+  if(typeof claude !== 'undefined' && claude.use){
+    try{
+      const downloads = await claude.use('downloads');
+      if(downloads){
+        try{ await downloads.save({filename, data: blob}); return; }
+        catch(err){ if(err && err.code==='declined') return; }
+      }
+    }catch(e){}
+  }
+  if(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()){
+    try{
+      const base64 = await new Promise((resolve, reject)=>{
+        const reader = new FileReader();
+        reader.onloadend = ()=> resolve(String(reader.result).split(',')[1] || '');
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+      const plugins = window.Capacitor.Plugins || {};
+      if(!plugins.Filesystem){ throw new Error('إضافة Filesystem غير مثبّتة في هذا الإصدار من التطبيق'); }
+      const { Filesystem, Share } = plugins;
+      const Directory = { Documents: 'DOCUMENTS' };
+      await Filesystem.writeFile({ path: filename, data: base64, directory: Directory.Documents });
+      if(Share){
+        try{
+          const info = await Filesystem.getUri({ path: filename, directory: Directory.Documents });
+          await Share.share({ title: filename, url: info.uri });
+        }catch(shareErr){
+          await appAlert('تم حفظ الملف باسم "'+filename+'" داخل مجلد المستندات الخاص بالتطبيق.');
+        }
+      } else {
+        await appAlert('تم حفظ الملف باسم "'+filename+'" داخل مجلد المستندات الخاص بالتطبيق.');
+      }
+      return;
+    }catch(e){
+      await appAlert('تعذر حفظ الملف داخل التطبيق: '+(e&&e.message?e.message:'خطأ غير معروف'));
+      return;
+    }
+  }
+  try{
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href=url; a.download=filename; document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  }catch(e){ await appAlert('تعذر تنزيل الملف.'); }
+}
+
 async function exportSqliteFile(){
   if(!SQLdb){ await appAlert('قاعدة البيانات غير جاهزة بعد.'); return; }
   syncToSql();
   const bin = SQLdb.export();
-  const filename = 'دفتر-التاجر.sqlite';
-  if(typeof claude !== 'undefined' && claude.use){
-    try{
-      const downloads = await claude.use('downloads');
-      if(downloads){ try{ await downloads.save({filename, data: new Blob([bin])}); return; }catch(err){ if(err && err.code!=='declined'){} } }
-    }catch(e){}
-  }
-  try{
-    const blob = new Blob([bin], {type:'application/x-sqlite3'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href=url; a.download=filename; document.body.appendChild(a); a.click(); a.remove();
-    URL.revokeObjectURL(url);
-  }catch(e){ await appAlert('تعذر تصدير ملف SQLite.'); }
+  await saveOrShareBlob('دفتر-التاجر.sqlite', new Blob([bin], {type:'application/x-sqlite3'}));
 }
 function nid(){ return db.seq++; }
 const CURR_SYMBOL = {USD:'$', SYP:'ل.س', none:''};
@@ -789,22 +828,7 @@ async function exportPdf(filename, bodyHtml, title){
       heightLeft -= pageH;
     }
     const blob = pdf.output('blob');
-    let savedViaClaude = false;
-    if(typeof claude !== 'undefined' && claude.use){
-      try{
-        const downloads = await claude.use('downloads');
-        if(downloads){
-          try{ await downloads.save({filename, data: blob}); savedViaClaude = true; }
-          catch(err){ if(err && err.code==='declined') savedViaClaude = true; /* user cancelled, don't fall back */ }
-        }
-      }catch(e){}
-    }
-    if(!savedViaClaude){
-      // standalone/local file (or claude save unavailable): normal browser download
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href=url; a.download=filename; document.body.appendChild(a); a.click(); a.remove();
-      URL.revokeObjectURL(url);
-    }
+    await saveOrShareBlob(filename, blob);
   }catch(e){
     await appAlert('حدث خطأ أثناء إنشاء PDF.');
   }finally{
@@ -1112,22 +1136,8 @@ document.getElementById('setSave').onclick = ()=>{
 // ---- backup / restore / reset ----
 async function exportBackup(){
   const dataStr = JSON.stringify(db, null, 2);
-  const filename = 'دفتر-التاجر-نسخة-احتياطية.json';
-  if(typeof claude !== 'undefined' && claude.use){
-    try{
-      const downloads = await claude.use('downloads');
-      if(downloads){
-        try{ await downloads.save({filename, data: dataStr}); return; }
-        catch(err){ if(err && err.code!=='declined'){ await appAlert('تعذر حفظ النسخة الاحتياطية: '+(err.message||err.code)); } return; }
-      }
-    }catch(e){}
-  }
-  try{
-    const blob = new Blob([dataStr], {type:'application/json'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href=url; a.download=filename; document.body.appendChild(a); a.click(); a.remove();
-    URL.revokeObjectURL(url);
-  }catch(e){ await appAlert('تعذر إنشاء ملف النسخة الاحتياطية.'); }
+  const blob = new Blob([dataStr], {type:'application/json'});
+  await saveOrShareBlob('دفتر-التاجر-نسخة-احتياطية.json', blob);
 }
 document.getElementById('exportBackupBtn').onclick = exportBackup;
 document.getElementById('exportSqliteBtn').onclick = exportSqliteFile;
